@@ -142,9 +142,48 @@ def with_executor(embed: discord.Embed, user: discord.abc.User) -> discord.Embed
     return embed
 
 
+QA_BOT_DISPLAY_NAME = "InsuranceGuard Help"
+
+
+def with_bot_branding(embed: discord.Embed) -> discord.Embed:
+    """Setzt den Autor auf den Bot-Namen/Logo statt auf den fragenden User."""
+    icon_url = bot.user.display_avatar.url if bot.user else None
+    embed.set_author(name=QA_BOT_DISPLAY_NAME, icon_url=icon_url)
+    embed.timestamp = datetime.now(timezone.utc)
+    return embed
+
+
 # ---------------------------------------------------------------------------
 # Nachrichtenspeicherung
 # ---------------------------------------------------------------------------
+
+def embed_to_text(embed: discord.Embed) -> str:
+    """Extrahiert lesbaren Text aus einem klassischen Embed (Titel, Beschreibung, Felder, Footer, Autor)."""
+    parts = []
+    if embed.author and embed.author.name:
+        parts.append(f"[Embed-Autor] {embed.author.name}")
+    if embed.title:
+        parts.append(f"[Embed-Titel] {embed.title}")
+    if embed.description:
+        parts.append(f"[Embed-Beschreibung] {embed.description}")
+    for field in embed.fields:
+        parts.append(f"[Embed-Feld] {field.name}: {field.value}")
+    if embed.footer and embed.footer.text:
+        parts.append(f"[Embed-Footer] {embed.footer.text}")
+    return "\n".join(parts)
+
+
+def extract_message_text(message: discord.Message) -> str:
+    """Kombiniert normalen Nachrichtentext mit Text aus klassischen Embeds (keine Components V2 Container)."""
+    parts = []
+    if message.content:
+        parts.append(message.content)
+    for embed in message.embeds:
+        embed_text = embed_to_text(embed)
+        if embed_text:
+            parts.append(embed_text)
+    return "\n".join(parts)
+
 
 def store_message(channel_id: int, message: discord.Message) -> None:
     key = str(channel_id)
@@ -153,7 +192,7 @@ def store_message(channel_id: int, message: discord.Message) -> None:
     db["messages"][key].append({
         "id": message.id,
         "author": str(message.author),
-        "content": message.content,
+        "content": extract_message_text(message),
         "timestamp": message.created_at.isoformat()
     })
 
@@ -275,16 +314,16 @@ async def on_ready():
 
 @bot.event
 async def on_message(message: discord.Message):
-    if message.author.bot:
-        return
+    if bot.user and message.author.id == bot.user.id:
+        return  # eigene Nachrichten (z.B. Q&A-Antworten) nie indizieren
 
-    # Live-Indexierung
+    # Live-Indexierung – bewusst auch für andere Bots (z.B. InsuranceGuard-Embeds mit wichtigen Infos)
     if message.channel.id in db["indexed_channels"]:
         store_message(message.channel.id, message)
         save_db(db)
 
-    # Q&A-Kanal
-    if db["qa_channel_id"] and message.channel.id == db["qa_channel_id"]:
+    # Q&A-Kanal – nur echte Nutzer stellen Fragen, keine Bots
+    if db["qa_channel_id"] and message.channel.id == db["qa_channel_id"] and not message.author.bot:
         if message.content.strip():
             await handle_question(message)
 
@@ -302,8 +341,7 @@ async def handle_question(message: discord.Message):
             return
         answer, used_model = await answer_question(context, message.content)
         embed = base_embed("Antwort", answer)
-        embed.set_footer(text=f"Beantwortet mit {used_model}")
-        embed = with_executor(embed, message.author)
+        embed = with_bot_branding(embed)
         await message.reply(embed=embed)
 
 
@@ -324,7 +362,7 @@ async def index_add(interaction: discord.Interaction, channel: discord.TextChann
     db["indexed_channels"].append(channel.id)
     save_db(db)
     embed = success_embed("Kanal hinzugefügt", bullet(f"{channel.mention} wird ab jetzt live indiziert."))
-    await interaction.response.send_message(embed=with_executor(embed, interaction.user))
+    await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
 @bot.tree.command(name="index-remove", description="Entfernt einen Kanal aus den Wissensquellen")
@@ -340,7 +378,7 @@ async def index_remove(interaction: discord.Interaction, channel: discord.TextCh
     db["indexed_channels"].remove(channel.id)
     save_db(db)
     embed = success_embed("Kanal entfernt", bullet(f"{channel.mention} ist keine Wissensquelle mehr."))
-    await interaction.response.send_message(embed=with_executor(embed, interaction.user))
+    await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
 @bot.tree.command(name="index-list", description="Zeigt alle indizierten Kanäle mit Nachrichtenanzahl")
@@ -359,7 +397,7 @@ async def index_list(interaction: discord.Interaction):
         count = len(db["messages"].get(str(channel_id), []))
         lines.append(bullet(f"{name} – {count} Nachrichten"))
     embed = base_embed("Wissensquellen", "\n".join(lines))
-    await interaction.response.send_message(embed=with_executor(embed, interaction.user))
+    await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
 @bot.tree.command(name="index-build", description="Lädt die komplette Historie eines indizierten Kanals nach")
@@ -376,7 +414,7 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
         )
         return
 
-    await interaction.response.send_message(embed=base_embed("Indexierung gestartet", "Historie wird geladen..."))
+    await interaction.response.send_message(embed=base_embed("Indexierung gestartet", "Historie wird geladen..."), ephemeral=True)
     progress_message = await interaction.original_response()
 
     total_new = 0
@@ -388,7 +426,8 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
         new_in_channel = 0
         async for msg in target_channel.history(limit=None, oldest_first=True):
             processed += 1
-            if not msg.author.bot and not message_exists(channel_id, msg.id):
+            is_own_message = bot.user and msg.author.id == bot.user.id
+            if not is_own_message and not message_exists(channel_id, msg.id):
                 store_message(channel_id, msg)
                 new_in_channel += 1
             if processed % PROGRESS_UPDATE_EVERY == 0:
@@ -418,7 +457,7 @@ async def set_qa_channel(interaction: discord.Interaction, channel: discord.Text
     db["qa_channel_id"] = channel.id
     save_db(db)
     embed = success_embed("Q&A-Kanal gesetzt", bullet(f"Fragen können jetzt in {channel.mention} gestellt werden."))
-    await interaction.response.send_message(embed=with_executor(embed, interaction.user))
+    await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
@@ -432,7 +471,7 @@ async def set_backup_channel(interaction: discord.Interaction, channel: discord.
     db["backup_channel_id"] = channel.id
     save_db(db)
     embed = success_embed("Backup-Kanal gesetzt", bullet(f"Backups werden ab jetzt in {channel.mention} gepostet."))
-    await interaction.response.send_message(embed=with_executor(embed, interaction.user))
+    await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
 @bot.tree.command(name="backup", description="Erstellt ein Backup der Datenbank im Backup-Kanal")
@@ -522,7 +561,7 @@ async def reload_db(interaction: discord.Interaction, attachment: discord.Attach
     save_db(db)
 
     embed = success_embed("Datenbank geladen", bullet(f"Quelle: {source_desc}"))
-    await interaction.followup.send(embed=with_executor(embed, interaction.user))
+    await interaction.followup.send(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
