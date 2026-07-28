@@ -493,8 +493,8 @@ async def backup(interaction: discord.Interaction):
 
     save_db(db)
     buffer = BytesIO(json.dumps(db, ensure_ascii=False, indent=2).encode("utf-8"))
-    timestamp = datetime.now(BERLIN_TZ).strftime("%Y-%m-%d_%H-%M-%S")
-    file = discord.File(buffer, filename=f"backup_{timestamp}.json")
+    timestamp = datetime.now(BERLIN_TZ).strftime("%Y-%m-%d %H:%M:%S")
+    file = discord.File(buffer, filename=DB_PATH)  # gleicher Name wie die lokale DB -> /reload passt immer
 
     embed = base_embed("Datenbank-Backup", bullet(f"Erstellt am {timestamp} (Europe/Berlin)"))
     embed = with_executor(embed, interaction.user)
