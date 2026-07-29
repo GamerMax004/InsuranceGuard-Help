@@ -26,9 +26,21 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-DISCORD_TOKEN = os.getenv("DISCORD_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY")
+def clean_env(name: str) -> str | None:
+    """Lädt eine Env-Var und entfernt Whitespace sowie versehentlich mitkopierte Anführungszeichen
+    (häufigste Ursache für 'ACCESS_TOKEN_TYPE_UNSUPPORTED'-Fehler bei der Gemini API)."""
+    value = os.getenv(name)
+    if value is None:
+        return None
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+        value = value[1:-1].strip()
+    return value or None
+
+
+DISCORD_TOKEN = clean_env("DISCORD_TOKEN")
+GEMINI_API_KEY = clean_env("GEMINI_API_KEY")
+GROQ_API_KEY = clean_env("GROQ_API_KEY")
 
 OWNER_ID = 1211683189186105434
 
@@ -74,7 +86,7 @@ STAGE_PRESENTING = ("📄", "Präsentiere Antwort...")
 DISCORD_ICON = "💬"
 GEMINI_ICON = "✨"
 GROQ_ICON = "⚡"
-AI_STUDIO_URL = "https://aistudio.google.com/apikey"
+AI_STUDIO_URL = "https://aistudio.google.com/apikey"  # Fallback, falls kein Key gesetzt ist
 # ---------------------------------------------------------------------------
 
 
@@ -147,6 +159,13 @@ def is_owner():
 
 def bullet(text: str) -> str:
     return f"> {text}"
+
+
+def code_block(text: str, limit: int = 1000) -> str:
+    """Formatiert Text als kopierbaren Codeblock, gekürzt aufs Discord-Feldlimit (1024 Zeichen)."""
+    if len(text) > limit:
+        text = text[:limit] + "\n... (gekürzt)"
+    return f"```\n{text}\n```"
 
 
 def base_embed(title: str, description: str = "", color: int = EMBED_COLOR) -> discord.Embed:
@@ -302,8 +321,8 @@ QA_SYSTEM_INSTRUCTION = (
 )
 
 
-async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, question: str) -> tuple[str | None, int | None]:
-    """Gibt (Antworttext_oder_None, HTTP-Status_oder_None) zurück."""
+async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, question: str) -> tuple[str | None, int | None, str | None]:
+    """Gibt (Antworttext_oder_None, HTTP-Status_oder_None, Fehlerdetails_oder_None) zurück."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "system_instruction": {"parts": [{"text": QA_SYSTEM_INSTRUCTION}]},
@@ -317,19 +336,22 @@ async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, q
             if resp.status != 200:
                 body = await resp.text()
                 log.warning(f"Gemini-Modell {model} fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
-                return None, resp.status
+                return None, resp.status, body[:900]
             data = await resp.json()
             candidates = data.get("candidates", [])
             if not candidates:
-                log.warning(f"Gemini-Modell {model}: keine Kandidaten in der Antwort (evtl. Safety-Block).")
-                return None, resp.status
-            return candidates[0]["content"]["parts"][0]["text"], resp.status
+                detail = f"Keine Kandidaten in der Antwort (evtl. Safety-Block). Rohantwort: {json.dumps(data)[:800]}"
+                log.warning(f"Gemini-Modell {model}: {detail}")
+                return None, resp.status, detail
+            return candidates[0]["content"]["parts"][0]["text"], resp.status, None
     except Exception as e:
-        log.warning(f"Gemini-Modell {model} Exception: {e}")
-        return None, None
+        detail = f"{type(e).__name__}: {e}"
+        log.warning(f"Gemini-Modell {model} Exception: {detail}")
+        return None, None, detail
 
 
-async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) -> str | None:
+async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) -> tuple[str | None, int | None, str | None]:
+    """Gibt (Antworttext_oder_None, HTTP-Status_oder_None, Fehlerdetails_oder_None) zurück."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
@@ -342,19 +364,20 @@ async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) 
     try:
         async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status != 200:
-                log.warning(f"Groq fehlgeschlagen: HTTP {resp.status}")
-                return None
+                body = await resp.text()
+                log.warning(f"Groq fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
+                return None, resp.status, body[:900]
             data = await resp.json()
-            return data["choices"][0]["message"]["content"]
+            return data["choices"][0]["message"]["content"], resp.status, None
     except Exception as e:
-        log.warning(f"Groq Exception: {e}")
-        return None
+        detail = f"{type(e).__name__}: {e}"
+        log.warning(f"Groq Exception: {detail}")
+        return None, None, detail
 
 
-async def measure_gemini_latency() -> float | None:
+async def measure_gemini_latency() -> tuple[float | None, str | None]:
     if not GEMINI_API_KEY:
-        log.warning("Gemini-Ping übersprungen: GEMINI_API_KEY ist nicht gesetzt.")
-        return None
+        return None, "GEMINI_API_KEY ist nicht gesetzt."
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
     try:
         start = time.monotonic()
@@ -363,20 +386,19 @@ async def measure_gemini_latency() -> float | None:
                 body = await resp.text()
                 if resp.status != 200:
                     log.warning(f"Gemini-Ping fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
-                    return None
-        return (time.monotonic() - start) * 1000
+                    return None, f"HTTP {resp.status}: {body[:900]}"
+        return (time.monotonic() - start) * 1000, None
     except asyncio.TimeoutError:
-        log.warning("Gemini-Ping fehlgeschlagen: Timeout nach 15 Sekunden.")
-        return None
+        return None, "Timeout nach 15 Sekunden – keine Antwort von Google erhalten."
     except Exception as e:
-        log.warning(f"Gemini-Ping Exception: {type(e).__name__}: {e}")
-        return None
+        detail = f"{type(e).__name__}: {e}"
+        log.warning(f"Gemini-Ping Exception: {detail}")
+        return None, detail
 
 
-async def measure_groq_latency() -> float | None:
+async def measure_groq_latency() -> tuple[float | None, str | None]:
     if not GROQ_API_KEY:
-        log.warning("Groq-Ping übersprungen: GROQ_API_KEY ist nicht gesetzt.")
-        return None
+        return None, "GROQ_API_KEY ist nicht gesetzt."
     url = "https://api.groq.com/openai/v1/models"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     try:
@@ -386,39 +408,48 @@ async def measure_groq_latency() -> float | None:
                 body = await resp.text()
                 if resp.status != 200:
                     log.warning(f"Groq-Ping fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
-                    return None
-        return (time.monotonic() - start) * 1000
+                    return None, f"HTTP {resp.status}: {body[:900]}"
+        return (time.monotonic() - start) * 1000, None
     except asyncio.TimeoutError:
-        log.warning("Groq-Ping fehlgeschlagen: Timeout nach 15 Sekunden.")
-        return None
+        return None, "Timeout nach 15 Sekunden – keine Antwort von Groq erhalten."
     except Exception as e:
-        log.warning(f"Groq-Ping Exception: {type(e).__name__}: {e}")
-        return None
+        detail = f"{type(e).__name__}: {e}"
+        log.warning(f"Groq-Ping Exception: {detail}")
+        return None, detail
 
 
-async def answer_question(context: str, question: str) -> tuple[str, str]:
-    """Gibt (Antwort, verwendetes_Modell) zurück. Probiert Gemini-Modelle der Reihe nach, dann Groq.
-    Bricht die Gemini-Kette bei einem Auth-Fehler (401/403) sofort ab, da weitere Modelle
-    mit demselben ungültigen Key ohnehin scheitern würden."""
+async def answer_question(context: str, question: str) -> tuple[str, str, str | None]:
+    """Gibt (Antwort, verwendetes_Modell, Fehlerdetails_oder_None) zurück. Probiert Gemini-Modelle
+    der Reihe nach, dann Groq. Bricht die Gemini-Kette bei einem Auth-Fehler (401/403) sofort ab,
+    da weitere Modelle mit demselben ungültigen Key ohnehin scheitern würden."""
     AUTH_ERROR_CODES = {401, 403}
+    error_log: list[str] = []
     async with aiohttp.ClientSession() as session:
         if not GEMINI_API_KEY:
-            log.warning("GEMINI_API_KEY nicht gesetzt – überspringe Gemini komplett.")
+            error_log.append("Gemini: GEMINI_API_KEY ist nicht gesetzt.")
         else:
             for model in GEMINI_MODELS:
-                result, status = await ask_gemini(session, model, context, question)
+                result, status, detail = await ask_gemini(session, model, context, question)
                 if result:
-                    return result, f"Gemini ({model})"
+                    return result, f"Gemini ({model})", None
+                error_log.append(f"Gemini ({model}, HTTP {status}):\n{detail}")
                 if status in AUTH_ERROR_CODES:
                     log.warning(f"Gemini-Auth-Fehler (HTTP {status}) – wechsle direkt zu Groq, überspringe restliche Gemini-Modelle.")
                     break
 
-        result = await ask_groq(session, context, question)
-        if result:
-            return result, f"Groq ({GROQ_MODEL})"
+        if not GROQ_API_KEY:
+            error_log.append("Groq: GROQ_API_KEY ist nicht gesetzt.")
+        else:
+            result, status, detail = await ask_groq(session, context, question)
+            if result:
+                return result, f"Groq ({GROQ_MODEL})", None
+            error_log.append(f"Groq (HTTP {status}):\n{detail}")
+
+    full_error = "\n\n".join(error_log) if error_log else "Keine weiteren Details verfügbar."
     return (
         "Ich konnte keine Antwort generieren – alle KI-Anbieter waren nicht erreichbar. Versuch es später erneut.",
-        "keiner (Fehler)"
+        "keiner (Fehler)",
+        full_error
     )
 
 
@@ -484,11 +515,19 @@ async def handle_question(message: discord.Message):
             return
 
         await safe_edit(STAGE_GENERATING)
-        answer, used_model = await answer_question(context, message.content)
+        answer, used_model, error_detail = await answer_question(context, message.content)
 
         await safe_edit(STAGE_PRESENTING)
         await asyncio.sleep(0.8)  # kurz sichtbar, bevor die finale Antwort ersetzt
         await safe_delete()
+
+        if error_detail:
+            embed = error_embed("Keine der KIs konnte antworten", answer)
+            embed.add_field(name="Fehlerdetails", value=code_block(error_detail), inline=False)
+            embed = with_bot_branding(embed)
+            await message.reply(embed=embed)
+            return
+
         embed = base_embed("Antwort", answer)
         embed = with_bot_branding(embed)
         await message.reply(embed=embed)
@@ -778,7 +817,7 @@ async def status(interaction: discord.Interaction):
     qa_channel = interaction.guild.get_channel(db["qa_channel_id"]) if db["qa_channel_id"] else None
     backup_channel = interaction.guild.get_channel(db["backup_channel_id"]) if db["backup_channel_id"] else None
 
-    gemini_ms, groq_ms = await asyncio.gather(measure_gemini_latency(), measure_groq_latency())
+    (gemini_ms, gemini_error), (groq_ms, groq_error) = await asyncio.gather(measure_gemini_latency(), measure_groq_latency())
     discord_ms = bot.latency * 1000
 
     lines = [
@@ -795,12 +834,23 @@ async def status(interaction: discord.Interaction):
     embed = base_embed("Bot-Status", "\n".join(lines))
     embed.add_field(name="API-Latenz", value="\n".join(latency_lines), inline=False)
 
+    if gemini_error:
+        embed.add_field(name=f"{GEMINI_ICON} Gemini-Fehlerdetails", value=code_block(gemini_error), inline=False)
+    if groq_error:
+        embed.add_field(name=f"{GROQ_ICON} Groq-Fehlerdetails", value=code_block(groq_error), inline=False)
+
     view = discord.ui.View()
+    if GEMINI_API_KEY:
+        gemini_test_url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
+        button_label = "Gemini-Key direkt testen"
+    else:
+        gemini_test_url = AI_STUDIO_URL
+        button_label = "Google AI Studio öffnen"
     view.add_item(discord.ui.Button(
-        label="Google AI Studio öffnen",
+        label=button_label,
         emoji=GEMINI_ICON,
         style=discord.ButtonStyle.link,
-        url=AI_STUDIO_URL
+        url=gemini_test_url
     ))
 
     await interaction.followup.send(embed=with_executor(embed, interaction.user), view=view, ephemeral=True)
@@ -848,13 +898,25 @@ def keep_alive():
 # Start
 # ---------------------------------------------------------------------------
 
+def mask_key(key: str | None) -> str:
+    if not key:
+        return "nicht gesetzt"
+    if len(key) <= 8:
+        return f"{key[:2]}... (Länge: {len(key)})"
+    return f"{key[:6]}...{key[-4:]} (Länge: {len(key)})"
+
+
 if __name__ == "__main__":
     if not DISCORD_TOKEN:
         raise SystemExit("DISCORD_TOKEN fehlt in der .env Datei.")
     if not GEMINI_API_KEY:
         log.warning("GEMINI_API_KEY fehlt – Q&A wird direkt auf Groq zurückfallen.")
+    else:
+        log.info(f"Gemini-Key geladen: {mask_key(GEMINI_API_KEY)}")
     if not GROQ_API_KEY:
         log.warning("GROQ_API_KEY fehlt – kein Fallback verfügbar, falls Gemini ausfällt.")
+    else:
+        log.info(f"Groq-Key geladen: {mask_key(GROQ_API_KEY)}")
 
     keep_alive()
     bot.run(DISCORD_TOKEN)
