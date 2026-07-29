@@ -58,12 +58,20 @@ GEMINI_MODELS = [
     "gemini-1.5-flash",
     "gemini-1.5-flash-8b",
 ]
-GROQ_MODEL = "llama-3.3-70b-versatile"
+GROQ_MODELS = [
+    "llama-3.3-70b-versatile",
+    "llama-3.1-8b-instant",
+    "llama3-70b-8192",
+    "gemma2-9b-it",
+]
 
 # Maximale Zeichenanzahl an Kontext, die an die KI geschickt wird (Kostenschutz)
 MAX_CONTEXT_CHARS = 500_000
 # Zeitabstand zwischen Fortschritts-Updates bei /index-build (Sekunden) - schützt vor Rate-Limits
 PROGRESS_UPDATE_INTERVAL_SECONDS = 5
+
+# Cooldown pro Nutzer zwischen zwei Fragen im Q&A-Kanal (Sekunden) - schützt die APIs vor Spam
+QUESTION_COOLDOWN_SECONDS = 60
 
 # ---------------------------------------------------------------------------
 # ANPASSBAR: Statusanzeige während der Fragenbeantwortung
@@ -128,6 +136,9 @@ def save_db(data: dict) -> None:
 
 
 db = load_db()
+
+# Cooldown-Tracking pro Nutzer (nicht persistiert, reicht als In-Memory-State)
+last_question_time: dict[int, float] = {}
 
 # ---------------------------------------------------------------------------
 # Discord Bot Setup
@@ -350,12 +361,12 @@ async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, q
         return None, None, detail
 
 
-async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) -> tuple[str | None, int | None, str | None]:
+async def ask_groq(session: aiohttp.ClientSession, model: str, context: str, question: str) -> tuple[str | None, int | None, str | None]:
     """Gibt (Antworttext_oder_None, HTTP-Status_oder_None, Fehlerdetails_oder_None) zurück."""
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}", "Content-Type": "application/json"}
     payload = {
-        "model": GROQ_MODEL,
+        "model": model,
         "messages": [
             {"role": "system", "content": QA_SYSTEM_INSTRUCTION},
             {"role": "user", "content": f"Kontext:\n{context}\n\nFrage: {question}"}
@@ -365,7 +376,7 @@ async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) 
         async with session.post(url, json=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status != 200:
                 body = await resp.text()
-                log.warning(f"Groq fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
+                log.warning(f"Groq-Modell {model} fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
                 return None, resp.status, body[:900]
             data = await resp.json()
             return data["choices"][0]["message"]["content"], resp.status, None
@@ -440,10 +451,14 @@ async def answer_question(context: str, question: str) -> tuple[str, str, str | 
         if not GROQ_API_KEY:
             error_log.append("Groq: GROQ_API_KEY ist nicht gesetzt.")
         else:
-            result, status, detail = await ask_groq(session, context, question)
-            if result:
-                return result, f"Groq ({GROQ_MODEL})", None
-            error_log.append(f"Groq (HTTP {status}):\n{detail}")
+            for model in GROQ_MODELS:
+                result, status, detail = await ask_groq(session, model, context, question)
+                if result:
+                    return result, f"Groq ({model})", None
+                error_log.append(f"Groq ({model}, HTTP {status}):\n{detail}")
+                if status in AUTH_ERROR_CODES:
+                    log.warning(f"Groq-Auth-Fehler (HTTP {status}) – überspringe restliche Groq-Modelle.")
+                    break
 
     full_error = "\n\n".join(error_log) if error_log else "Keine weiteren Details verfügbar."
     return (
@@ -485,7 +500,33 @@ async def on_message(message: discord.Message):
     await bot.process_commands(message)
 
 
+async def log_error_to_backup(guild: discord.Guild, title: str, detail: str):
+    """Schickt Fehlerdetails zusätzlich in den Backup-Kanal, falls einer gesetzt ist."""
+    if not db["backup_channel_id"]:
+        return
+    backup_channel = guild.get_channel(db["backup_channel_id"])
+    if not backup_channel:
+        return
+    embed = error_embed(title, code_block(detail, limit=3800))
+    embed.timestamp = datetime.now(timezone.utc)
+    try:
+        await backup_channel.send(embed=embed)
+    except discord.HTTPException:
+        pass
+
+
 async def handle_question(message: discord.Message):
+    now = time.monotonic()
+    last = last_question_time.get(message.author.id, 0.0)
+    remaining = QUESTION_COOLDOWN_SECONDS - (now - last)
+    if remaining > 0:
+        await message.reply(
+            embed=error_embed("Bitte kurz warten", bullet(f"Noch {remaining:.0f} Sekunden, bevor du die nächste Frage stellen kannst.")),
+            delete_after=10
+        )
+        return
+    last_question_time[message.author.id] = now
+
     def stage_text(stage: tuple[str, str]) -> str:
         emoji, text = stage
         return f"{emoji} {text}"
@@ -526,6 +567,7 @@ async def handle_question(message: discord.Message):
             embed.add_field(name="Fehlerdetails", value=code_block(error_detail), inline=False)
             embed = with_bot_branding(embed)
             await message.reply(embed=embed)
+            await log_error_to_backup(message.guild, f"Fehler bei Frage von {message.author}", error_detail)
             return
 
         embed = base_embed("Antwort", answer)
@@ -535,6 +577,7 @@ async def handle_question(message: discord.Message):
         log.error(f"Fehler bei der Fragenbeantwortung: {e}")
         await safe_delete()
         await message.reply(embed=error_embed("Unerwarteter Fehler", "Bei der Bearbeitung deiner Frage ist etwas schiefgelaufen."))
+        await log_error_to_backup(message.guild, f"Unerwarteter Fehler bei Frage von {message.author}", f"{type(e).__name__}: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -836,8 +879,10 @@ async def status(interaction: discord.Interaction):
 
     if gemini_error:
         embed.add_field(name=f"{GEMINI_ICON} Gemini-Fehlerdetails", value=code_block(gemini_error), inline=False)
+        await log_error_to_backup(interaction.guild, "Gemini nicht erreichbar (/status)", gemini_error)
     if groq_error:
         embed.add_field(name=f"{GROQ_ICON} Groq-Fehlerdetails", value=code_block(groq_error), inline=False)
+        await log_error_to_backup(interaction.guild, "Groq nicht erreichbar (/status)", groq_error)
 
     view = discord.ui.View()
     if GEMINI_API_KEY:
