@@ -58,14 +58,23 @@ PROGRESS_UPDATE_INTERVAL_SECONDS = 5
 # ---------------------------------------------------------------------------
 # Emoji-Frames für den Spinner im /index-build Fortschritts-Embed. Kann auch mit
 # eigenen animierten Server-Emojis befüllt werden, z.B. ["<a:laden1:123>", "<a:laden2:456>"]
-SPINNER_FRAMES = ["<a:loading:1531744922405961838>"]
+SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
 # Die Verarbeiten-Nachricht durchläuft diese drei Phasen (Emoji + Text), jeweils per
 # Edit auf dieselbe Nachricht. Emojis können auch eigene animierte Server-Emojis sein,
 # im Format <a:name:id>.
-STAGE_THINKING = ("<:datetime:1531744091669270709>", "Nachdenken...")
-STAGE_GENERATING = ("<:edit:1531744105334571240>", "Antwort wird generiert...")
-STAGE_PRESENTING = ("<:serversfolder:1531744103736545471>", "Präsentiere Antwort...")
+STAGE_THINKING = ("🕐", "Nachdenken...")
+STAGE_GENERATING = ("✏️", "Antwort wird generiert...")
+STAGE_PRESENTING = ("📄", "Präsentiere Antwort...")
+# ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# ANPASSBAR: /status Anzeige
+# ---------------------------------------------------------------------------
+DISCORD_ICON = "💬"
+GEMINI_ICON = "✨"
+GROQ_ICON = "⚡"
+AI_STUDIO_URL = "https://aistudio.google.com/apikey"
 # ---------------------------------------------------------------------------
 
 
@@ -182,6 +191,14 @@ def progress_bar_indeterminate(tick: int, length: int = 20) -> str:
     return "`[" + "".join(bar) + "]`"
 
 
+def progress_bar_percent(percent: float, length: int = 20) -> str:
+    """Echter, füllender Fortschrittsbalken basierend auf einem bekannten Prozentwert."""
+    percent = max(0.0, min(100.0, percent))
+    filled = round((percent / 100) * length)
+    bar = "█" * filled + "░" * (length - filled)
+    return f"`[{bar}]` {percent:.0f}%"
+
+
 def format_duration(seconds: float) -> str:
     seconds = int(seconds)
     minutes, seconds = divmod(seconds, 60)
@@ -285,7 +302,8 @@ QA_SYSTEM_INSTRUCTION = (
 )
 
 
-async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, question: str) -> str | None:
+async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, question: str) -> tuple[str | None, int | None]:
+    """Gibt (Antworttext_oder_None, HTTP-Status_oder_None) zurück."""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={GEMINI_API_KEY}"
     payload = {
         "system_instruction": {"parts": [{"text": QA_SYSTEM_INSTRUCTION}]},
@@ -297,16 +315,18 @@ async def ask_gemini(session: aiohttp.ClientSession, model: str, context: str, q
     try:
         async with session.post(url, json=payload, timeout=aiohttp.ClientTimeout(total=60)) as resp:
             if resp.status != 200:
-                log.warning(f"Gemini-Modell {model} fehlgeschlagen: HTTP {resp.status}")
-                return None
+                body = await resp.text()
+                log.warning(f"Gemini-Modell {model} fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
+                return None, resp.status
             data = await resp.json()
             candidates = data.get("candidates", [])
             if not candidates:
-                return None
-            return candidates[0]["content"]["parts"][0]["text"]
+                log.warning(f"Gemini-Modell {model}: keine Kandidaten in der Antwort (evtl. Safety-Block).")
+                return None, resp.status
+            return candidates[0]["content"]["parts"][0]["text"], resp.status
     except Exception as e:
         log.warning(f"Gemini-Modell {model} Exception: {e}")
-        return None
+        return None, None
 
 
 async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) -> str | None:
@@ -333,44 +353,66 @@ async def ask_groq(session: aiohttp.ClientSession, context: str, question: str) 
 
 async def measure_gemini_latency() -> float | None:
     if not GEMINI_API_KEY:
+        log.warning("Gemini-Ping übersprungen: GEMINI_API_KEY ist nicht gesetzt.")
         return None
     url = f"https://generativelanguage.googleapis.com/v1beta/models?key={GEMINI_API_KEY}"
     try:
         start = time.monotonic()
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                await resp.read()
+            async with session.get(url, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                body = await resp.text()
                 if resp.status != 200:
+                    log.warning(f"Gemini-Ping fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
                     return None
         return (time.monotonic() - start) * 1000
-    except Exception:
+    except asyncio.TimeoutError:
+        log.warning("Gemini-Ping fehlgeschlagen: Timeout nach 15 Sekunden.")
+        return None
+    except Exception as e:
+        log.warning(f"Gemini-Ping Exception: {type(e).__name__}: {e}")
         return None
 
 
 async def measure_groq_latency() -> float | None:
     if not GROQ_API_KEY:
+        log.warning("Groq-Ping übersprungen: GROQ_API_KEY ist nicht gesetzt.")
         return None
     url = "https://api.groq.com/openai/v1/models"
     headers = {"Authorization": f"Bearer {GROQ_API_KEY}"}
     try:
         start = time.monotonic()
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                await resp.read()
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                body = await resp.text()
                 if resp.status != 200:
+                    log.warning(f"Groq-Ping fehlgeschlagen: HTTP {resp.status} – {body[:500]}")
                     return None
         return (time.monotonic() - start) * 1000
-    except Exception:
+    except asyncio.TimeoutError:
+        log.warning("Groq-Ping fehlgeschlagen: Timeout nach 15 Sekunden.")
+        return None
+    except Exception as e:
+        log.warning(f"Groq-Ping Exception: {type(e).__name__}: {e}")
         return None
 
 
 async def answer_question(context: str, question: str) -> tuple[str, str]:
-    """Gibt (Antwort, verwendetes_Modell) zurück. Probiert Gemini-Modelle der Reihe nach, dann Groq."""
+    """Gibt (Antwort, verwendetes_Modell) zurück. Probiert Gemini-Modelle der Reihe nach, dann Groq.
+    Bricht die Gemini-Kette bei einem Auth-Fehler (401/403) sofort ab, da weitere Modelle
+    mit demselben ungültigen Key ohnehin scheitern würden."""
+    AUTH_ERROR_CODES = {401, 403}
     async with aiohttp.ClientSession() as session:
-        for model in GEMINI_MODELS:
-            result = await ask_gemini(session, model, context, question)
-            if result:
-                return result, f"Gemini ({model})"
+        if not GEMINI_API_KEY:
+            log.warning("GEMINI_API_KEY nicht gesetzt – überspringe Gemini komplett.")
+        else:
+            for model in GEMINI_MODELS:
+                result, status = await ask_gemini(session, model, context, question)
+                if result:
+                    return result, f"Gemini ({model})"
+                if status in AUTH_ERROR_CODES:
+                    log.warning(f"Gemini-Auth-Fehler (HTTP {status}) – wechsle direkt zu Groq, überspringe restliche Gemini-Modelle.")
+                    break
+
         result = await ask_groq(session, context, question)
         if result:
             return result, f"Groq ({GROQ_MODEL})"
@@ -525,22 +567,54 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
         )
         return
 
-    await interaction.response.send_message(embed=base_embed("Indexierung gestartet", "Historie wird geladen..."), ephemeral=True)
+    await interaction.response.send_message(embed=base_embed("Indexierung gestartet", "Zähle Nachrichten..."), ephemeral=True)
     progress_message = await interaction.original_response()
 
     start_time = time.monotonic()
     last_update = 0.0
     update_count = 0
-    total_new = 0
 
+    # Phase 1: Zählen, damit die Fortschrittsanzeige in Phase 2 einen echten Prozentwert hat.
+    # Kostet etwa genauso viel Zeit wie das Verarbeiten selbst, dafür läuft der Balken danach real durch.
+    channel_totals: dict[int, int] = {}
+    total_count = 0
     for idx, channel_id in enumerate(targets, start=1):
         target_channel = interaction.guild.get_channel(channel_id)
         if not target_channel:
             continue
-        processed = 0
+        count = 0
+        async for _ in target_channel.history(limit=None):
+            count += 1
+            now = time.monotonic()
+            if now - last_update >= PROGRESS_UPDATE_INTERVAL_SECONDS:
+                last_update = now
+                update_count += 1
+                spinner = SPINNER_FRAMES[update_count % len(SPINNER_FRAMES)]
+                embed = base_embed(
+                    f"{spinner} Zähle Nachrichten...",
+                    bullet(f"Kanal {idx}/{len(targets)}: {target_channel.mention}") + "\n" +
+                    bullet(f"{count} Nachrichten gefunden") + "\n" +
+                    bullet(f"Laufzeit: {format_duration(now - start_time)}") + "\n\n" +
+                    progress_bar_indeterminate(update_count)
+                )
+                try:
+                    await progress_message.edit(embed=embed)
+                except discord.HTTPException:
+                    pass
+        channel_totals[channel_id] = count
+        total_count += count
+
+    # Phase 2: Verarbeiten mit echtem Prozent-Fortschritt
+    processed_total = 0
+    total_new = 0
+    last_update = 0.0
+    for idx, channel_id in enumerate(targets, start=1):
+        target_channel = interaction.guild.get_channel(channel_id)
+        if not target_channel:
+            continue
         new_in_channel = 0
         async for msg in target_channel.history(limit=None, oldest_first=True):
-            processed += 1
+            processed_total += 1
             is_own_message = bot.user and msg.author.id == bot.user.id
             if not is_own_message and not message_exists(channel_id, msg.id):
                 store_message(channel_id, msg)
@@ -549,17 +623,16 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
             now = time.monotonic()
             if now - last_update >= PROGRESS_UPDATE_INTERVAL_SECONDS:
                 last_update = now
-                update_count += 1
                 elapsed = now - start_time
-                rate = processed / elapsed if elapsed > 0 else 0
-                spinner = SPINNER_FRAMES[update_count % len(SPINNER_FRAMES)]
-                bar = progress_bar_indeterminate(update_count)
+                rate = processed_total / elapsed if elapsed > 0 else 0
+                percent = (processed_total / total_count * 100) if total_count > 0 else 100
+                remaining = (total_count - processed_total) / rate if rate > 0 else 0
                 embed = base_embed(
-                    f"{spinner} Indexierung läuft",
+                    "Indexierung läuft",
                     bullet(f"Kanal {idx}/{len(targets)}: {target_channel.mention}") + "\n" +
-                    bullet(f"{processed} Nachrichten durchsucht, {new_in_channel} neu gespeichert") + "\n" +
-                    bullet(f"Tempo: {rate:.1f} Nachrichten/Sek · Laufzeit: {format_duration(elapsed)}") + "\n\n" +
-                    bar
+                    bullet(f"{processed_total}/{total_count} Nachrichten verarbeitet, {new_in_channel} neu in diesem Kanal") + "\n" +
+                    bullet(f"Tempo: {rate:.1f} Nachrichten/Sek · Verbleibend: ~{format_duration(remaining)}") + "\n\n" +
+                    progress_bar_percent(percent)
                 )
                 try:
                     await progress_message.edit(embed=embed)
@@ -715,13 +788,22 @@ async def status(interaction: discord.Interaction):
         bullet(f"Backup-Kanal: {backup_channel.mention if backup_channel else 'nicht gesetzt'}"),
     ]
     latency_lines = [
-        f"Discord   {latency_bar(discord_ms, max_ms=300)}",
-        f"Gemini    {latency_bar(gemini_ms, max_ms=1500)}",
-        f"Groq      {latency_bar(groq_ms, max_ms=1500)}",
+        f"{DISCORD_ICON} Discord   {latency_bar(discord_ms, max_ms=300)}",
+        f"{GEMINI_ICON} Gemini    {latency_bar(gemini_ms, max_ms=1500)}",
+        f"{GROQ_ICON} Groq      {latency_bar(groq_ms, max_ms=1500)}",
     ]
     embed = base_embed("Bot-Status", "\n".join(lines))
     embed.add_field(name="API-Latenz", value="\n".join(latency_lines), inline=False)
-    await interaction.followup.send(embed=with_executor(embed, interaction.user), ephemeral=True)
+
+    view = discord.ui.View()
+    view.add_item(discord.ui.Button(
+        label="Google AI Studio öffnen",
+        emoji=GEMINI_ICON,
+        style=discord.ButtonStyle.link,
+        url=AI_STUDIO_URL
+    ))
+
+    await interaction.followup.send(embed=with_executor(embed, interaction.user), view=view, ephemeral=True)
 
 
 # ---------------------------------------------------------------------------
