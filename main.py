@@ -194,6 +194,22 @@ def channel_link(channel: discord.abc.GuildChannel) -> str:
     return f"[#{clean_channel_name(channel.name)}](https://discord.com/channels/{channel.guild.id}/{channel.id})"
 
 
+def linkify_channel_mentions(text: str, guild: discord.Guild) -> str:
+    """Ersetzt #kanal-name Erwähnungen in einem KI-generierten Antworttext durch klickbare Markdown-Links,
+    da die KI selbst nur reinen Text schreibt und nichts von unserem Link-Format weiß."""
+    channel_map = {clean_channel_name(ch.name).lower(): ch for ch in guild.text_channels}
+    if not channel_map:
+        return text
+    names_sorted = sorted(channel_map.keys(), key=len, reverse=True)
+    pattern = re.compile(r"#(" + "|".join(re.escape(n) for n in names_sorted) + r")\b", re.IGNORECASE)
+
+    def replace(match: re.Match) -> str:
+        channel = channel_map.get(match.group(1).lower())
+        return channel_link(channel) if channel else match.group(0)
+
+    return pattern.sub(replace, text)
+
+
 def base_embed(title: str, description: str = "", color: int = EMBED_COLOR) -> discord.Embed:
     embed = discord.Embed(title=title, description=description, color=color)
     return embed
@@ -585,7 +601,7 @@ async def handle_question(message: discord.Message):
             await log_error_to_backup(message.guild, f"Fehler bei Frage von {message.author}", error_detail)
             return
 
-        embed = base_embed("Antwort", answer)
+        embed = base_embed("Antwort", linkify_channel_mentions(answer, message.guild))
         embed = with_bot_branding(embed)
         await message.reply(embed=embed)
     except Exception as e:
