@@ -95,6 +95,9 @@ DISCORD_ICON = "💬"
 GEMINI_ICON = "✨"
 GROQ_ICON = "⚡"
 AI_STUDIO_URL = "https://aistudio.google.com/apikey"  # Fallback, falls kein Key gesetzt ist
+# Einheitliche Skala für alle Latenz-Balken - so ist ein höherer ms-Wert IMMER ein längerer
+# Balken, egal welcher Dienst, statt pro Dienst unterschiedlich skaliert zu wirken.
+LATENCY_BAR_MAX_MS = 2000
 # ---------------------------------------------------------------------------
 
 
@@ -177,6 +180,11 @@ def code_block(text: str, limit: int = 1000) -> str:
     if len(text) > limit:
         text = text[:limit] + "\n... (gekürzt)"
     return f"```\n{text}\n```"
+
+
+def channel_link(channel: discord.abc.GuildChannel) -> str:
+    """Markdown-Link im Format [#kanal-name](https://discord.com/channels/...) statt nativer <#id>-Mention."""
+    return f"[#{channel.name}](https://discord.com/channels/{channel.guild.id}/{channel.id})"
 
 
 def base_embed(title: str, description: str = "", color: int = EMBED_COLOR) -> discord.Embed:
@@ -590,13 +598,13 @@ async def handle_question(message: discord.Message):
 async def index_add(interaction: discord.Interaction, channel: discord.TextChannel):
     if channel.id in db["indexed_channels"]:
         await interaction.response.send_message(
-            embed=error_embed("Bereits indiziert", f"{channel.mention} ist bereits eine Wissensquelle."),
+            embed=error_embed("Bereits indiziert", f"{channel_link(channel)} ist bereits eine Wissensquelle."),
             ephemeral=True
         )
         return
     db["indexed_channels"].append(channel.id)
     save_db(db)
-    embed = success_embed("Kanal hinzugefügt", bullet(f"{channel.mention} wird ab jetzt live indiziert."))
+    embed = success_embed("Kanal hinzugefügt", bullet(f"{channel_link(channel)} wird ab jetzt live indiziert."))
     await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
@@ -606,13 +614,13 @@ async def index_add(interaction: discord.Interaction, channel: discord.TextChann
 async def index_remove(interaction: discord.Interaction, channel: discord.TextChannel):
     if channel.id not in db["indexed_channels"]:
         await interaction.response.send_message(
-            embed=error_embed("Nicht indiziert", f"{channel.mention} ist keine Wissensquelle."),
+            embed=error_embed("Nicht indiziert", f"{channel_link(channel)} ist keine Wissensquelle."),
             ephemeral=True
         )
         return
     db["indexed_channels"].remove(channel.id)
     save_db(db)
-    embed = success_embed("Kanal entfernt", bullet(f"{channel.mention} ist keine Wissensquelle mehr."))
+    embed = success_embed("Kanal entfernt", bullet(f"{channel_link(channel)} ist keine Wissensquelle mehr."))
     await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
@@ -628,7 +636,7 @@ async def index_list(interaction: discord.Interaction):
     lines = []
     for channel_id in db["indexed_channels"]:
         channel = interaction.guild.get_channel(channel_id)
-        name = channel.mention if channel else f"unbekannt ({channel_id})"
+        name = channel_link(channel) if channel else f"unbekannt ({channel_id})"
         count = len(db["messages"].get(str(channel_id), []))
         lines.append(bullet(f"{name} – {count} Nachrichten"))
     embed = base_embed("Wissensquellen", "\n".join(lines))
@@ -674,7 +682,7 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
                 spinner = SPINNER_FRAMES[update_count % len(SPINNER_FRAMES)]
                 embed = base_embed(
                     f"{spinner} Zähle Nachrichten...",
-                    bullet(f"Kanal {idx}/{len(targets)}: {target_channel.mention}") + "\n" +
+                    bullet(f"Kanal {idx}/{len(targets)}: {channel_link(target_channel)}") + "\n" +
                     bullet(f"{count} Nachrichten gefunden") + "\n" +
                     bullet(f"Laufzeit: {format_duration(now - start_time)}") + "\n\n" +
                     progress_bar_indeterminate(update_count)
@@ -711,7 +719,7 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
                 remaining = (total_count - processed_total) / rate if rate > 0 else 0
                 embed = base_embed(
                     "Indexierung läuft",
-                    bullet(f"Kanal {idx}/{len(targets)}: {target_channel.mention}") + "\n" +
+                    bullet(f"Kanal {idx}/{len(targets)}: {channel_link(target_channel)}") + "\n" +
                     bullet(f"{processed_total}/{total_count} Nachrichten verarbeitet, {new_in_channel} neu in diesem Kanal") + "\n" +
                     bullet(f"Tempo: {rate:.1f} Nachrichten/Sek · Verbleibend: ~{format_duration(remaining)}") + "\n\n" +
                     progress_bar_percent(percent)
@@ -722,6 +730,19 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
                     pass
         save_db(db)
         total_new += new_in_channel
+
+    # Balken explizit auf 100% bringen, statt direkt von X% auf die Erfolgsmeldung zu springen
+    final_percent_embed = base_embed(
+        "Indexierung läuft",
+        bullet(f"{len(targets)}/{len(targets)} Kanäle abgeschlossen") + "\n" +
+        bullet(f"{processed_total}/{total_count} Nachrichten verarbeitet, {total_new} neu gespeichert insgesamt") + "\n\n" +
+        progress_bar_percent(100)
+    )
+    try:
+        await progress_message.edit(embed=final_percent_embed)
+        await asyncio.sleep(0.8)
+    except discord.HTTPException:
+        pass
 
     total_elapsed = time.monotonic() - start_time
     final_embed = success_embed(
@@ -739,7 +760,7 @@ async def index_build(interaction: discord.Interaction, channel: discord.TextCha
 async def set_qa_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     db["qa_channel_id"] = channel.id
     save_db(db)
-    embed = success_embed("Q&A-Kanal gesetzt", bullet(f"Fragen können jetzt in {channel.mention} gestellt werden."))
+    embed = success_embed("Q&A-Kanal gesetzt", bullet(f"Fragen können jetzt in {channel_link(channel)} gestellt werden."))
     await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
@@ -753,7 +774,7 @@ async def set_qa_channel(interaction: discord.Interaction, channel: discord.Text
 async def set_backup_channel(interaction: discord.Interaction, channel: discord.TextChannel):
     db["backup_channel_id"] = channel.id
     save_db(db)
-    embed = success_embed("Backup-Kanal gesetzt", bullet(f"Backups werden ab jetzt in {channel.mention} gepostet."))
+    embed = success_embed("Backup-Kanal gesetzt", bullet(f"Backups werden ab jetzt in {channel_link(channel)} gepostet."))
     await interaction.response.send_message(embed=with_executor(embed, interaction.user), ephemeral=True)
 
 
@@ -784,7 +805,7 @@ async def backup(interaction: discord.Interaction):
     await backup_channel.send(embed=embed, file=file)
 
     await interaction.response.send_message(
-        embed=success_embed("Backup erstellt", bullet(f"Backup wurde in {backup_channel.mention} gepostet.")),
+        embed=success_embed("Backup erstellt", bullet(f"Backup wurde in {channel_link(backup_channel)} gepostet.")),
         ephemeral=True
     )
 
@@ -866,13 +887,13 @@ async def status(interaction: discord.Interaction):
     lines = [
         bullet(f"Indizierte Kanäle: {len(db['indexed_channels'])}"),
         bullet(f"Gespeicherte Nachrichten: {total_messages}"),
-        bullet(f"Q&A-Kanal: {qa_channel.mention if qa_channel else 'nicht gesetzt'}"),
-        bullet(f"Backup-Kanal: {backup_channel.mention if backup_channel else 'nicht gesetzt'}"),
+        bullet(f"Q&A-Kanal: {channel_link(qa_channel) if qa_channel else 'nicht gesetzt'}"),
+        bullet(f"Backup-Kanal: {channel_link(backup_channel) if backup_channel else 'nicht gesetzt'}"),
     ]
     latency_lines = [
-        f"{DISCORD_ICON} Discord   {latency_bar(discord_ms, max_ms=300)}",
-        f"{GEMINI_ICON} Gemini    {latency_bar(gemini_ms, max_ms=1500)}",
-        f"{GROQ_ICON} Groq      {latency_bar(groq_ms, max_ms=1500)}",
+        f"{DISCORD_ICON} Discord   {latency_bar(discord_ms, max_ms=LATENCY_BAR_MAX_MS)}",
+        f"{GEMINI_ICON} Gemini    {latency_bar(gemini_ms, max_ms=LATENCY_BAR_MAX_MS)}",
+        f"{GROQ_ICON} Groq      {latency_bar(groq_ms, max_ms=LATENCY_BAR_MAX_MS)}",
     ]
     embed = base_embed("Bot-Status", "\n".join(lines))
     embed.add_field(name="API-Latenz", value="\n".join(latency_lines), inline=False)
