@@ -79,14 +79,14 @@ QUESTION_COOLDOWN_SECONDS = 60
 # ---------------------------------------------------------------------------
 # Emoji-Frames für den Spinner im /index-build Fortschritts-Embed. Kann auch mit
 # eigenen animierten Server-Emojis befüllt werden, z.B. ["<a:laden1:123>", "<a:laden2:456>"]
-SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+SPINNER_FRAMES = ["<a:loading:1532333207742189731>"]
 
 # Die Verarbeiten-Nachricht durchläuft diese drei Phasen (Emoji + Text), jeweils per
 # Edit auf dieselbe Nachricht. Emojis können auch eigene animierte Server-Emojis sein,
 # im Format <a:name:id>.
-STAGE_THINKING = ("🕐", "Nachdenken...")
-STAGE_GENERATING = ("✏️", "Antwort wird generiert...")
-STAGE_PRESENTING = ("📄", "Präsentiere Antwort...")
+STAGE_THINKING = ("<:datetime:1531744091669270709>", "Nachdenken...")
+STAGE_GENERATING = ("<:edit:1531744105334571240>", "Antwort wird generiert...")
+STAGE_PRESENTING = ("<:serversfolder:1531744103736545471>", "Präsentiere Antwort...")
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
