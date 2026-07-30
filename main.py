@@ -6,6 +6,7 @@ APIs: Gemini (primär, mit Modell-Fallback-Kette) -> Groq (finaler Fallback)
 
 import os
 import json
+import re
 import time
 import asyncio
 import logging
@@ -182,9 +183,15 @@ def code_block(text: str, limit: int = 1000) -> str:
     return f"```\n{text}\n```"
 
 
+def clean_channel_name(name: str) -> str:
+    """Entfernt führende Deko-Klammern wie 【❓】 oder 【🚨】 vor dem eigentlichen Kanalnamen."""
+    cleaned = re.sub(r"^[【\[][^】\]]*[】\]]\s*", "", name).strip()
+    return cleaned or name
+
+
 def channel_link(channel: discord.abc.GuildChannel) -> str:
     """Markdown-Link im Format [#kanal-name](https://discord.com/channels/...) statt nativer <#id>-Mention."""
-    return f"[#{channel.name}](https://discord.com/channels/{channel.guild.id}/{channel.id})"
+    return f"[#{clean_channel_name(channel.name)}](https://discord.com/channels/{channel.guild.id}/{channel.id})"
 
 
 def base_embed(title: str, description: str = "", color: int = EMBED_COLOR) -> discord.Embed:
