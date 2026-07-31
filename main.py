@@ -229,7 +229,7 @@ def with_executor(embed: discord.Embed, user: discord.abc.User) -> discord.Embed
     return embed
 
 
-QA_BOT_DISPLAY_NAME = "InsuranceGuard Help"
+QA_BOT_DISPLAY_NAME = "InsuranceGuard Intelligence"
 
 
 def with_bot_branding(embed: discord.Embed) -> discord.Embed:
