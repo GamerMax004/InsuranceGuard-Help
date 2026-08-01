@@ -79,14 +79,14 @@ QUESTION_COOLDOWN_SECONDS = 60
 # ---------------------------------------------------------------------------
 # Emoji-Frames für den Spinner im /index-build Fortschritts-Embed. Kann auch mit
 # eigenen animierten Server-Emojis befüllt werden, z.B. ["<a:laden1:123>", "<a:laden2:456>"]
-SPINNER_FRAMES = ["<a:loading:1532333207742189731>"]
+SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
 
 # Die Verarbeiten-Nachricht durchläuft diese drei Phasen (Emoji + Text), jeweils per
 # Edit auf dieselbe Nachricht. Emojis können auch eigene animierte Server-Emojis sein,
 # im Format <a:name:id>.
-STAGE_THINKING = ("<:datetime:1531744091669270709>", "Nachdenken...")
-STAGE_GENERATING = ("<:edit:1531744105334571240>", "Antwort wird generiert...")
-STAGE_PRESENTING = ("<:serversfolder:1531744103736545471>", "Präsentiere Antwort...")
+STAGE_THINKING = ("🕐", "Nachdenken...")
+STAGE_GENERATING = ("✏️", "Antwort wird generiert...")
+STAGE_PRESENTING = ("📄", "Präsentiere Antwort...")
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
@@ -229,7 +229,7 @@ def with_executor(embed: discord.Embed, user: discord.abc.User) -> discord.Embed
     return embed
 
 
-QA_BOT_DISPLAY_NAME = "InsuranceGuard Intelligence"
+QA_BOT_DISPLAY_NAME = "InsuranceGuard Help"
 
 
 def with_bot_branding(embed: discord.Embed) -> discord.Embed:
@@ -594,8 +594,7 @@ async def handle_question(message: discord.Message):
         await safe_delete()
 
         if error_detail:
-            embed = error_embed("Keine der KIs konnte antworten", answer)
-            embed.add_field(name="Fehlerdetails", value=code_block(error_detail), inline=False)
+            embed = error_embed("Fehler", "Da hat etwas nicht geklappt.")
             embed = with_bot_branding(embed)
             await message.reply(embed=embed)
             await log_error_to_backup(message.guild, f"Fehler bei Frage von {message.author}", error_detail)
@@ -607,7 +606,7 @@ async def handle_question(message: discord.Message):
     except Exception as e:
         log.error(f"Fehler bei der Fragenbeantwortung: {e}")
         await safe_delete()
-        await message.reply(embed=error_embed("Unerwarteter Fehler", "Bei der Bearbeitung deiner Frage ist etwas schiefgelaufen."))
+        await message.reply(embed=with_bot_branding(error_embed("Fehler", "Da hat etwas nicht geklappt.")))
         await log_error_to_backup(message.guild, f"Unerwarteter Fehler bei Frage von {message.author}", f"{type(e).__name__}: {e}")
 
 
