@@ -79,22 +79,22 @@ QUESTION_COOLDOWN_SECONDS = 60
 # ---------------------------------------------------------------------------
 # Emoji-Frames für den Spinner im /index-build Fortschritts-Embed. Kann auch mit
 # eigenen animierten Server-Emojis befüllt werden, z.B. ["<a:laden1:123>", "<a:laden2:456>"]
-SPINNER_FRAMES = ["◐", "◓", "◑", "◒"]
+SPINNER_FRAMES = ["<a:loading:1532333207742189731>"]
 
 # Die Verarbeiten-Nachricht durchläuft diese drei Phasen (Emoji + Text), jeweils per
 # Edit auf dieselbe Nachricht. Emojis können auch eigene animierte Server-Emojis sein,
 # im Format <a:name:id>.
-STAGE_THINKING = ("🕐", "Nachdenken...")
-STAGE_GENERATING = ("✏️", "Antwort wird generiert...")
-STAGE_PRESENTING = ("📄", "Präsentiere Antwort...")
+STAGE_THINKING = ("<:datetime:1531744091669270709>", "Nachdenken <a:4127printswhite:1533762562502557747>")
+STAGE_GENERATING = ("<:edit:1531744105334571240>", "Antwort wird generiert <a:4127printswhite:1533762562502557747>")
+STAGE_PRESENTING = ("<:serversfolder:1531744103736545471>", "Präsentiere Antwort <a:4127printswhite:1533762562502557747>")
 # ---------------------------------------------------------------------------
 
 # ---------------------------------------------------------------------------
 # ANPASSBAR: /status Anzeige
 # ---------------------------------------------------------------------------
-DISCORD_ICON = "💬"
-GEMINI_ICON = "✨"
-GROQ_ICON = "⚡"
+DISCORD_ICON = "<:704462partneredserverowner:1533762565929308242>"
+GEMINI_ICON = "<:729070gemini:1533762567292583956>"
+GROQ_ICON = "<:196145grok:1533762564364963950>"
 AI_STUDIO_URL = "https://aistudio.google.com/apikey"  # Fallback, falls kein Key gesetzt ist
 # Einheitliche Skala für alle Latenz-Balken - so ist ein höherer ms-Wert IMMER ein längerer
 # Balken, egal welcher Dienst, statt pro Dienst unterschiedlich skaliert zu wirken.
@@ -229,7 +229,7 @@ def with_executor(embed: discord.Embed, user: discord.abc.User) -> discord.Embed
     return embed
 
 
-QA_BOT_DISPLAY_NAME = "InsuranceGuard Help"
+QA_BOT_DISPLAY_NAME = "InsuranceGuard Intelligence"
 
 
 def with_bot_branding(embed: discord.Embed) -> discord.Embed:
